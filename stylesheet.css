@@ -1,0 +1,76 @@
+.clipboard-popup {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    border-radius: 12px;
+    padding: 12px;
+    width: 350px;
+    height: 450px;
+    box-shadow: 0px 8px 16px rgba(0, 0, 0, 0.5);
+}
+
+.tab-box {
+    margin-bottom: 10px;
+}
+
+.tab-button {
+    background-color: #2d2d2d;
+    color: #ffffff;
+    border-radius: 6px;
+    padding: 6px 12px;
+    margin-right: 6px;
+}
+
+.tab-button:hover {
+    background-color: #3e3e3e;
+}
+
+.scroll-container {
+    max-height: 380px;
+}
+
+.item-list {
+    spacing: 8px;
+}
+
+.history-item {
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+    border-radius: 6px;
+    padding: 8px 12px;
+    text-align: left;
+}
+
+.history-item-img {
+    padding: 4px;
+    text-align: center;
+}
+
+.image-preview {
+    border-radius: 4px;
+}
+
+.history-item:hover {
+    background-color: #e95420; /* Naranja Ubuntu */
+    color: #ffffff;
+}
+
+.emoji-grid {
+    spacing: 8px;
+}
+
+.emoji-button {
+    font-size: 22px;
+    padding: 6px;
+    background-color: #2b2b2b;
+    border-radius: 6px;
+}
+
+.emoji-button:hover {
+    background-color: #3e3e3e;
+}
+
+.empty-label {
+    color: #888888;
+    padding: 20px;
+    text-align: center;
+}

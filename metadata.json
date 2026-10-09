@@ -2,5 +2,5 @@
     "uuid": "clipboard-emoji@caspian.dev",
     "name": "Clipboard & Emoji Switcher",
     "description": "Historial de portapapeles y selector de emojis nativo para Ubuntu",
-    "shell-version": ["45", "46", "47"]
+    "shell-version": ["45", "46", "47", "48", "49", "50"]
 }
