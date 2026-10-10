@@ -20,7 +20,13 @@ export default class ClipboardEmojiExtension extends Extension {
         this._targetWindow = null;
         this._pasteDelayId = 0;
         this._injectDelayId = 0;
+        this._reopenDelayId = 0;
         this._virtualKeyboard = null;
+
+        this._positionInitialized = false;
+        this._dragState = null;
+        this._dragMotionSignal = 0;
+        this._dragReleaseSignal = 0;
 
         this._cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'clipboard-emoji']);
         GLib.mkdir_with_parents(this._cacheDir, 0o755);
@@ -310,23 +316,73 @@ export default class ClipboardEmojiExtension extends Extension {
             reactive: true
         });
 
-        let tabBox = new St.BoxLayout({ style_class: 'tab-box' });
+        // Barra superior arrastrable: permite mover el popup entre monitores.
+        const headerBox = new St.BoxLayout({
+            vertical: true,
+            style_class: 'popup-header',
+            x_expand: true
+        });
+        const titleRow = new St.BoxLayout({
+            vertical: false,
+            style_class: 'popup-title-row',
+            x_expand: true
+        });
+        const dragHandle = new St.Label({
+            text: '⠿  Clipboard & Emoji Switcher',
+            style_class: 'drag-handle',
+            x_expand: true,
+            reactive: true,
+            can_focus: false
+        });
+        const closeButton = new St.Button({
+            label: '×',
+            style_class: 'close-button',
+            can_focus: true,
+            accessible_name: 'Cerrar portapapeles'
+        });
+        const tabBox = new St.BoxLayout({
+            vertical: false,
+            style_class: 'tab-box'
+        });
 
-        let btnClipboardTab = new St.Button({ label: 'Portapapeles', style_class: 'tab-button' });
-        let btnEmojiTab = new St.Button({ label: ' Emojis', style_class: 'tab-button' });
+        const btnClipboardTab = new St.Button({
+            label: ' Portapapeles',
+            style_class: 'tab-button'
+        });
+        const btnEmojiTab = new St.Button({
+            label: ' Emojis',
+            style_class: 'tab-button'
+        });
 
         btnClipboardTab.connect('clicked', () => this._switchTab('clipboard'));
         btnEmojiTab.connect('clicked', () => this._switchTab('emoji'));
+        closeButton.connect('clicked', () => this._closePopup());
 
+        titleRow.add_child(dragHandle);
+        titleRow.add_child(closeButton);
         tabBox.add_child(btnClipboardTab);
         tabBox.add_child(btnEmojiTab);
-        this._popup.add_child(tabBox);
+        headerBox.add_child(titleRow);
+        headerBox.add_child(tabBox);
+        this._popup.add_child(headerBox);
+        this._setupPopupDragging(dragHandle);
 
-        this._contentStack = new St.BoxLayout({ vertical: true, style_class: 'content-area' });
+        this._contentStack = new St.BoxLayout({
+            vertical: true,
+            style_class: 'content-area',
+            x_expand: true,
+            y_expand: true
+        });
         this._popup.add_child(this._contentStack);
 
         Main.uiGroup.add_child(this._popup);
         this._switchTab('clipboard');
+    }
+
+    _closePopup() {
+        if (this._popup)
+            this._popup.hide();
+        console.log('[Clipboard] Popup cerrado por el usuario.');
     }
 
     _switchTab(tabName) {
@@ -405,7 +461,7 @@ export default class ClipboardEmojiExtension extends Extension {
 
                     itemBtn.connect('clicked', () => {
                         if (this._copyImageToClipboard(item.path, item.mimeType || 'image/png'))
-                            this._closePopupAndPaste();
+                            this._pasteKeepingPopupOpen();
                     });
                 }
 
@@ -452,15 +508,22 @@ export default class ClipboardEmojiExtension extends Extension {
 
             this._markInternalCopy();
             St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
-            this._closePopupAndPaste();
+            this._pasteKeepingPopupOpen();
         } catch (e) {
             console.error('[Clipboard] Error al copiar texto seleccionado:', e);
         }
     }
 
-    _closePopupAndPaste() {
-        if (this._popup)
+    // Para que Wayland entregue el atajo a la aplicación de destino, el popup
+    // se oculta brevemente durante el cambio de foco y reaparece automáticamente.
+    _pasteKeepingPopupOpen() {
+        const wasVisible = Boolean(this._popup && this._popup.visible);
+        this._shouldReopenAfterPaste = wasVisible;
+
+        if (this._popup && wasVisible) {
             this._popup.hide();
+            console.log('[Clipboard] Popup oculto brevemente para entregar el foco a la aplicación.');
+        }
 
         this._schedulePaste(this._targetWindow);
     }
@@ -470,29 +533,57 @@ export default class ClipboardEmojiExtension extends Extension {
             GLib.source_remove(this._pasteDelayId);
         if (this._injectDelayId)
             GLib.source_remove(this._injectDelayId);
+        if (this._reopenDelayId) {
+            GLib.source_remove(this._reopenDelayId);
+            this._reopenDelayId = 0;
+        }
 
-        // Dar tiempo a que se oculte el popup y vuelva el foco a la aplicación.
+        // El tiempo permite que Mutter quite el actor superior y reactive
+        // la ventana que tenía el foco antes de abrir el historial.
         this._pasteDelayId = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT,
-            120,
+            100,
             () => {
                 this._pasteDelayId = 0;
 
                 try {
                     global.stage.set_key_focus(null);
 
-                    if (targetWindow && targetWindow !== global.display.focus_window)
+                    if (targetWindow) {
                         Main.activateWindow(targetWindow);
+                        console.log('[Clipboard] Ventana destino reactivada.');
+                    } else {
+                        console.warn('[Clipboard] No hay ventana destino registrada para pegar.');
+                    }
                 } catch (e) {
                     console.error('[Clipboard] No se pudo restaurar el foco:', e);
                 }
 
                 this._injectDelayId = GLib.timeout_add(
                     GLib.PRIORITY_DEFAULT,
-                    100,
+                    120,
                     () => {
                         this._injectDelayId = 0;
                         this._injectPaste();
+
+                        // Reaparecer después de inyectar Ctrl+V. Conserva la pestaña
+                        // y la posición anterior, y no vuelve a capturar el foco.
+                        if (this._shouldReopenAfterPaste && this._popup) {
+                            this._reopenDelayId = GLib.timeout_add(
+                                GLib.PRIORITY_DEFAULT,
+                                100,
+                                () => {
+                                    this._reopenDelayId = 0;
+                                    if (this._popup) {
+                                        this._popup.show();
+                                        console.log('[Clipboard] Popup restaurado después del pegado.');
+                                    }
+                                    this._shouldReopenAfterPaste = false;
+                                    return GLib.SOURCE_REMOVE;
+                                }
+                            );
+                        }
+
                         return GLib.SOURCE_REMOVE;
                     }
                 );
@@ -511,47 +602,74 @@ export default class ClipboardEmojiExtension extends Extension {
                 );
             }
 
-            // Códigos físicos KEY_LEFTCTRL=29 y KEY_V=47.
-            // Se usa notify_key para que funcione también con distribuciones de teclado no US.
+            if (!this._virtualKeyboard) {
+                console.error('[Clipboard] Mutter no pudo crear un teclado virtual.');
+                return;
+            }
+
+            // Algunos terminales requieren Ctrl+Shift+V, no Ctrl+V.
+            let targetClass = '';
+            try {
+                targetClass = (this._targetWindow?.get_wm_class() || '').toLowerCase();
+            } catch (_) {
+                // Algunas ventanas no exponen WM_CLASS; usamos Ctrl+V por defecto.
+            }
+            const isTerminal = /terminal|ptyxis|kgx|konsole|alacritty|kitty|wezterm|xterm|tilix|foot/.test(targetClass);
             const device = this._virtualKeyboard;
-            const now = () => GLib.get_monotonic_time();
+            let timestamp = GLib.get_monotonic_time();
+            const step = 10;
+            const ctrl = 29;  // Linux evdev KEY_LEFTCTRL
+            const shift = 42; // Linux evdev KEY_LEFTSHIFT
+            const v = 47;     // Linux evdev KEY_V
 
-            device.notify_key(now(), 29, Clutter.KeyState.PRESSED);
-            device.notify_key(now(), 47, Clutter.KeyState.PRESSED);
-            device.notify_key(now(), 47, Clutter.KeyState.RELEASED);
-            device.notify_key(now(), 29, Clutter.KeyState.RELEASED);
+            device.notify_key(timestamp, ctrl, Clutter.KeyState.PRESSED);
+            timestamp += step;
+            if (isTerminal) {
+                device.notify_key(timestamp, shift, Clutter.KeyState.PRESSED);
+                timestamp += step;
+            }
+            device.notify_key(timestamp, v, Clutter.KeyState.PRESSED);
+            timestamp += step;
+            device.notify_key(timestamp, v, Clutter.KeyState.RELEASED);
+            timestamp += step;
+            if (isTerminal) {
+                device.notify_key(timestamp, shift, Clutter.KeyState.RELEASED);
+                timestamp += step;
+            }
+            device.notify_key(timestamp, ctrl, Clutter.KeyState.RELEASED);
 
-            console.log('[Clipboard] Atajo Ctrl+V enviado a la ventana anterior.');
+            console.log(`[Clipboard] Atajo ${isTerminal ? 'Ctrl+Shift+V' : 'Ctrl+V'} enviado a la ventana destino.`);
         } catch (e) {
-            console.error('[Clipboard] Error al simular Ctrl+V:', e);
+            console.error('[Clipboard] Error al simular el atajo de pegado:', e);
         }
     }
 
     _copyImageToClipboard(filePath, mimeType = 'image/png') {
         try {
             const file = Gio.File.new_for_path(filePath);
-            // load_bytes() devuelve [GLib.Bytes, etag]; necesitamos el primer elemento.
+            // load_bytes() devuelve [GLib.Bytes, etag]; St.Clipboard.set_content
+            // acepta directamente GLib.Bytes y publica el MIME type para otras apps.
             const [bytes] = file.load_bytes(null);
 
-            if (!bytes) {
-                console.error('[Clipboard] El archivo de imagen no devolvió bytes.');
+            if (!bytes || bytes.get_size() <= 0) {
+                console.error('[Clipboard] El archivo de imagen no devolvió bytes válidos.');
                 return false;
             }
 
-            const source = new Meta.SelectionSourceMemory({
-                mimetype: mimeType,
-                content: bytes
-            });
-
             this._markInternalCopy();
-            global.display.get_selection().set_owner(
-                Meta.SelectionType.SELECTION_CLIPBOARD,
-                source
+            St.Clipboard.get_default().set_content(
+                St.ClipboardType.CLIPBOARD,
+                mimeType,
+                bytes
             );
-            console.log(`[Clipboard] Imagen restaurada al portapapeles (${mimeType}).`);
+
+            console.log(
+                `[Clipboard] Imagen publicada en el portapapeles como ${mimeType} ` +
+                `(${bytes.get_size()} bytes).`
+            );
             return true;
         } catch (e) {
-            console.error('[Clipboard] Error al restaurar imagen:', e);
+            console.error('[Clipboard] Error al publicar imagen en el portapapeles:', e);
             return false;
         }
     }
@@ -596,17 +714,90 @@ export default class ClipboardEmojiExtension extends Extension {
         }
     }
 
+    _setupPopupDragging(dragHandle) {
+        dragHandle.connect('button-press-event', (actor, event) => {
+            if (event.get_button() !== 1)
+                return Clutter.EVENT_PROPAGATE;
+
+            const [pointerX, pointerY] = event.get_coords();
+            const [popupX, popupY] = this._popup.get_position();
+            this._dragState = { pointerX, pointerY, popupX, popupY };
+
+            // Seguir el puntero en el stage permite cruzar el borde del monitor
+            // actual sin perder el arrastre.
+            if (this._dragMotionSignal)
+                global.stage.disconnect(this._dragMotionSignal);
+            if (this._dragReleaseSignal)
+                global.stage.disconnect(this._dragReleaseSignal);
+
+            this._dragMotionSignal = global.stage.connect('motion-event', (stage, motionEvent) => {
+                if (!this._dragState || !this._popup)
+                    return Clutter.EVENT_PROPAGATE;
+
+                const [x, y] = motionEvent.get_coords();
+                const [width, height] = this._popup.get_size();
+                const monitors = Main.layoutManager.monitors || [];
+                if (monitors.length > 0) {
+                    const minX = Math.min(...monitors.map(m => m.x));
+                    const minY = Math.min(...monitors.map(m => m.y));
+                    const maxX = Math.max(...monitors.map(m => m.x + m.width));
+                    const maxY = Math.max(...monitors.map(m => m.y + m.height));
+                    const nextX = Math.max(minX, Math.min(
+                        this._dragState.popupX + x - this._dragState.pointerX,
+                        maxX - width
+                    ));
+                    const nextY = Math.max(minY, Math.min(
+                        this._dragState.popupY + y - this._dragState.pointerY,
+                        maxY - height
+                    ));
+                    this._popup.set_position(Math.round(nextX), Math.round(nextY));
+                } else {
+                    this._popup.set_position(
+                        Math.round(this._dragState.popupX + x - this._dragState.pointerX),
+                        Math.round(this._dragState.popupY + y - this._dragState.pointerY)
+                    );
+                }
+                return Clutter.EVENT_STOP;
+            });
+
+            this._dragReleaseSignal = global.stage.connect('button-release-event', (stage, releaseEvent) => {
+                if (releaseEvent.get_button() === 1) {
+                    this._finishPopupDragging();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
+            });
+
+            return Clutter.EVENT_STOP;
+        });
+    }
+
+    _finishPopupDragging() {
+        this._dragState = null;
+        if (this._dragMotionSignal) {
+            global.stage.disconnect(this._dragMotionSignal);
+            this._dragMotionSignal = 0;
+        }
+        if (this._dragReleaseSignal) {
+            global.stage.disconnect(this._dragReleaseSignal);
+            this._dragReleaseSignal = 0;
+        }
+    }
+
     _togglePopup() {
         if (this._popup.visible) {
-            this._popup.hide();
+            this._closePopup();
         } else {
             // Guardar la ventana destino antes de interactuar con el popup.
             this._targetWindow = global.display.focus_window;
-            let monitor = Main.layoutManager.primaryMonitor;
-            this._popup.set_position(
-                monitor.x + Math.floor((monitor.width - 340) / 2),
-                monitor.y + Math.floor((monitor.height - 440) / 2)
-            );
+            if (!this._positionInitialized) {
+                const monitor = Main.layoutManager.primaryMonitor;
+                this._popup.set_position(
+                    monitor.x + Math.floor((monitor.width - 350) / 2),
+                    monitor.y + Math.floor((monitor.height - 450) / 2)
+                );
+                this._positionInitialized = true;
+            }
 
             // Traer el widget al frente por encima de las ventanas de las aplicaciones
             Main.uiGroup.set_child_above_sibling(this._popup, null);
@@ -637,6 +828,11 @@ export default class ClipboardEmojiExtension extends Extension {
             GLib.source_remove(this._injectDelayId);
             this._injectDelayId = 0;
         }
+        if (this._reopenDelayId) {
+            GLib.source_remove(this._reopenDelayId);
+            this._reopenDelayId = 0;
+        }
+        this._finishPopupDragging();
         this._virtualKeyboard = null;
         this._targetWindow = null;
 

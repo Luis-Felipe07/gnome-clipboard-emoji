@@ -8,8 +8,33 @@
     box-shadow: 0px 8px 16px rgba(0, 0, 0, 0.5);
 }
 
-.tab-box {
+.popup-header {
+    width: 100%;
     margin-bottom: 10px;
+    spacing: 8px;
+}
+
+.popup-title-row {
+    width: 100%;
+    spacing: 8px;
+    min-height: 30px;
+}
+
+.drag-handle {
+    color: #bdbdbd;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background-color: #252525;
+    font-size: 12px;
+}
+
+.drag-handle:hover {
+    background-color: #353535;
+    color: #ffffff;
+}
+
+.tab-box {
+    spacing: 4px;
 }
 
 .tab-button {
@@ -24,12 +49,30 @@
     background-color: #3e3e3e;
 }
 
+.close-button {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+    font-size: 20px;
+    font-weight: bold;
+}
+
+.close-button:hover {
+    background-color: #e95420;
+    color: #ffffff;
+}
+
 .scroll-container {
     max-height: 380px;
+    width: 100%;
 }
 
 .item-list {
     spacing: 8px;
+    width: 100%;
 }
 
 .history-item {
