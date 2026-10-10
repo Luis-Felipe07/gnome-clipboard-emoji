@@ -37,20 +37,29 @@
     color: #e0e0e0;
     border-radius: 6px;
     padding: 8px 12px;
+    min-height: 42px;
+    width: 100%;
+    text-align: left;
+}
+
+.history-item-label {
+    font-size: 14px;
     text-align: left;
 }
 
 .history-item-img {
-    padding: 4px;
+    padding: 6px;
     text-align: center;
+    width: 100%;
 }
 
 .image-preview {
     border-radius: 4px;
+    max-width: 100%;
 }
 
 .history-item:hover {
-    background-color: #e95420; /* Naranja Ubuntu */
+    background-color: #e95420;
     color: #ffffff;
 }
 
